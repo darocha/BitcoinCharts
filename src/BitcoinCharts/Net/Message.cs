@@ -9,5 +9,6 @@ namespace BitcoinCharts.Net {
     internal class Message {
         public byte[] Buffer;
         public Socket Socket;
+        public int Count;        
     }
 }

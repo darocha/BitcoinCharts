@@ -15,6 +15,11 @@ namespace BitcoinCharts {
     public partial class BitcoinChartsClient {
         private Socket _socket;
         private Subject<Trade> _trades = new Subject<Trade>();
+        private Subject<byte[]> _packets = new Subject<byte[]>();
+
+        public BitcoinChartsClient() {
+            _packets.Subscribe(ProcessPackets);
+        }
 
         public IObservable<Trade> Trades { get { return _trades; } }
 
@@ -32,7 +37,7 @@ namespace BitcoinCharts {
         }
 
         private void Listen(Message message, AsyncCallback callback) {
-            message.Socket.BeginReceive(message.Buffer, 0, message.Buffer.Length, SocketFlags.None, callback, message);
+            message.Socket.BeginReceive(message.Buffer, message.Count, message.Buffer.Length - message.Count, SocketFlags.None, callback, message);
         }
 
         private void EndConnect(IAsyncResult ar) {
@@ -50,18 +55,45 @@ namespace BitcoinCharts {
 
         private void EndReadMessage(IAsyncResult ar) {
             var message = (Message)ar.AsyncState;
-
+            var buffer = message.Buffer;
             int count = message.Socket.EndReceive(ar);
 
-            using(var reader = new StreamReader(new MemoryStream(message.Buffer, 0, count))) {
-                var json = default(string);
-                while(null != (json = reader.ReadLine())) {
-                    var trade = JsonConvert.DeserializeObject<Trade>(json);
-                    _trades.OnNext(trade);
+            if(count <= 0) {
+                return;
+            }
+
+            message.Count += count;
+            if(message.Count > message.Buffer.Length) {
+                return;
+            }
+
+            for(int i = message.Count - 1; i >= 1; i--) {
+                if(buffer[i] == 0x0a && buffer[i - 1] == 0x0d) {
+                    count = i + 1;
+                    message.Count = message.Count - count;
+                    break;
                 }
             }
 
-            Listen(message,EndReadMessage);
+            var packet = new byte[count];
+            Buffer.BlockCopy(buffer, 0, packet, 0, count);
+            _packets.OnNext(packet);
+
+            if(message.Count != 0) {
+                Buffer.BlockCopy(message.Buffer, count, message.Buffer, 0, message.Count);
+            }
+
+            Listen(message, EndReadMessage);
+        }
+
+        private void ProcessPackets(byte[] packet) {
+            using(var reader = new StreamReader(new MemoryStream(packet))) {
+                var line = default(string);
+                while(null != (line = reader.ReadLine())) {
+                    var trade = JsonConvert.DeserializeObject<Trade>(line);
+                    _trades.OnNext(trade);            
+                }
+            }
         }
 
         internal class ConnectSettings {
