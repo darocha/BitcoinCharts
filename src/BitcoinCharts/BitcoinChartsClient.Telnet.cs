@@ -10,30 +10,34 @@ using System.Net.Sockets;
 using System.Reactive.Subjects;
 using System.Text;
 using System.Threading.Tasks;
+using System.Reactive.Linq;
 
 namespace BitcoinCharts {
     public partial class BitcoinChartsClient {
         private Socket _socket;
         private Subject<Trade> _trades = new Subject<Trade>();
         private Subject<byte[]> _packets = new Subject<byte[]>();
-
-        public BitcoinChartsClient() {
-            _packets.Subscribe(ProcessPackets);
-        }
-
-        public IObservable<Trade> Trades { get { return _trades; } }
+        private IDisposable _subscription;
 
         public Task<bool> ConnectAsync(Action<IConnectConfigurator> configure){
             var c = new ConnectConfigurator();
             configure(c);
             _socket = c.Build();
 
-            var tcs = new TaskCompletionSource<bool>(_socket);
+            _subscription = _subscription ?? (_subscription = _packets.Subscribe(x => ProcessPackets(x, _trades)));
 
+            var tcs = new TaskCompletionSource<bool>(_socket);
             var settings = c.Settings;
             _socket.BeginConnect(settings.Address, settings.Port, EndConnect, tcs);
             
             return tcs.Task;
+        }
+
+        public IObservable<Trade> Trades(Action<ITradeConfigurator> configure) {
+            var c = new TradeConfigurator(_trades);
+            configure(c);
+
+            return c.Build();
         }
 
         private void Listen(Message message, AsyncCallback callback) {
@@ -86,13 +90,35 @@ namespace BitcoinCharts {
             Listen(message, EndReadMessage);
         }
 
-        private void ProcessPackets(byte[] packet) {
+        private static void ProcessPackets(byte[] packet, IObserver<Trade> trades) {
             using(var reader = new StreamReader(new MemoryStream(packet))) {
                 var line = default(string);
                 while(null != (line = reader.ReadLine())) {
                     var trade = JsonConvert.DeserializeObject<Trade>(line);
-                    _trades.OnNext(trade);            
+                    trades.OnNext(trade);            
                 }
+            }
+        }
+
+        public interface ITradeConfigurator {
+            ITradeConfigurator Symbol(string value);
+        }
+
+        internal class TradeConfigurator : ITradeConfigurator {
+            private IObservable<Trade> _source;
+            private string _symbol;
+
+            public TradeConfigurator(IObservable<Trade> source) {
+                _source = source;
+            }
+
+            public ITradeConfigurator Symbol(string value) {
+                _symbol = value;
+                return this;
+            }
+
+            public IObservable<Trade> Build() {
+                return _source.Where(x => _symbol == "*" || x.Symbol.Equals(_symbol, StringComparison.InvariantCultureIgnoreCase));
             }
         }
 
@@ -148,6 +174,10 @@ namespace BitcoinCharts {
                 .Address("api.bitcoincharts.com")
                 .Port(27007)
             );
+        }
+
+        public static IObservable<Trade> Trades(this BitcoinChartsClient client) {
+            return client.Trades(x => x.Symbol("*"));
         }
     }
 }

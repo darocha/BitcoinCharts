@@ -16,9 +16,15 @@ namespace BitcoinCharts {
         private HttpClient _client;
         private volatile bool _disposed;
 
-        public BitcoinChartsClient(string uri = "http://api.bitcoincharts.com/v1") {
-            _client = new HttpClient(_handler);
-            _client.BaseAddress = new Uri(uri);
+        public BitcoinChartsClient()
+            : this(x => { }) {
+        }
+
+        public BitcoinChartsClient(Action<IBitcoinChartsClientConfigurator> configure){            
+            var c = new BitcoinChartsClientConfigurator();        
+            configure(c);
+
+            _client = c.Build();
         }
 
         ~BitcoinChartsClient() {
@@ -29,8 +35,7 @@ namespace BitcoinCharts {
             var c = new GetTradesConfigurator();
             configure(c);
 
-            var request = c.Build();
-
+            var request = c.Build();            
             return _client.SendAsync(request)
                 .GetAwaiter()
                 .GetResult()
