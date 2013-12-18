@@ -14,82 +14,142 @@ using System.Reactive.Linq;
 
 namespace BitcoinCharts {
     public partial class BitcoinChartsClient {
-        private Socket _socket;
+        private static readonly int ReceiveBufferSize = 8096;
+        private Socket _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        private ConnectSettings _settings;
+        private SocketAsyncEventArgs _receive;
         private Subject<Trade> _trades = new Subject<Trade>();
         private Subject<byte[]> _packets = new Subject<byte[]>();
         private IDisposable _subscription;
+        private Message _message = new Message { Buffer = new byte[ReceiveBufferSize] };
 
-        public Task<bool> ConnectAsync(Action<IConnectConfigurator> configure){
-            var c = new ConnectConfigurator();
-            configure(c);
-            _socket = c.Build();
+        private static TResult Configure<TSource, TResult>(Action<TSource> configure) where TResult : TSource, new() {
+            var result = new TResult();
+            configure(result);
+            return result;
+        }
 
-            _subscription = _subscription ?? (_subscription = _packets.Subscribe(x => ProcessPackets(x, _trades)));
+        public void Connect(Action<IConnectConfigurator> configure) {
+            var c = Configure<IConnectConfigurator, ConnectConfigurator>(configure);
+            _settings = c.Build();            
+        }
 
-            var tcs = new TaskCompletionSource<bool>(_socket);
-            var settings = c.Settings;
-            _socket.BeginConnect(settings.Address, settings.Port, EndConnect, tcs);
-            
-            return tcs.Task;
+        private void  Connect(ConnectSettings settings) {
+            var completed = default(EventHandler<SocketAsyncEventArgs>);
+
+            var saea = new SocketAsyncEventArgs {
+                RemoteEndPoint = new DnsEndPoint(_settings.Address, _settings.Port),
+                UserToken = _socket
+            };
+
+            saea.Completed += completed = (s, e) => {
+                e.Completed -= completed;
+                if(e.SocketError == SocketError.Success) {
+                    _receive = _receive ?? (_receive = CreateSocketAsyncEventArgs());
+                    Receive(_receive);
+                } else {
+                    Connect(settings);
+                }
+            };
+
+            if(false == _socket.ConnectAsync(saea)) {
+                completed(this, saea);
+            }
+        }
+
+        private SocketAsyncEventArgs CreateSocketAsyncEventArgs() {
+            var buffer = new byte[ReceiveBufferSize];
+            var message = new Message {
+                Buffer = buffer,
+                Count = 0,
+            };
+            var saea = new SocketAsyncEventArgs();
+            saea.SetBuffer(buffer, 0, buffer.Length);
+            saea.Completed += ProcessCompleted;
+            saea.UserToken = message;
+            return saea;
+        }
+
+        private void Receive(SocketAsyncEventArgs e) {
+            var message = e.UserToken as Message;
+            e.SetBuffer(message.Count, message.Buffer.Length - message.Count);
+            _socket.ReceiveAsync(e);
+        }
+
+        private void ProcessCompleted(object sender, SocketAsyncEventArgs e) {
+            ProcessCompleted(e);
+        }
+
+        private void ProcessCompleted(SocketAsyncEventArgs e) {
+            switch(e.LastOperation) {
+                case SocketAsyncOperation.Connect:
+                    ProcessConnect(e);
+                    break;
+                case SocketAsyncOperation.Receive:
+                    ProcessReceive(e);
+                    break;
+                case SocketAsyncOperation.Disconnect:
+                    ProcessDisconnect(e);
+                    break;
+                default:                    
+                    break;
+            }
+        }
+
+        private void ProcessConnect(SocketAsyncEventArgs e) {
+            if(e.SocketError == SocketError.Success) {
+            }
+        }
+
+        private void ProcessReceive(SocketAsyncEventArgs e) {
+            Console.WriteLine((new { SocketError = e.SocketError, BytesTransfered = e.BytesTransferred }.ToString()));
+            if(e.SocketError == SocketError.Success && e.BytesTransferred > 0) {
+                var buffer = e.Buffer;
+                var count = e.BytesTransferred;
+                var message = e.UserToken as Message;
+
+                if(count <= 0) {
+                    return;
+                }
+
+                message.Count += count;
+                if(message.Count > message.Buffer.Length) {
+                    return;
+                }
+
+                for(int i = message.Count - 1; i >= 1; i--) {
+                    if(buffer[i] == 0x0a && buffer[i - 1] == 0x0d) {
+                        count = i + 1;
+                        message.Count = message.Count - count;
+                        break;
+                    }
+                }
+
+                var packet = new byte[count];
+                Buffer.BlockCopy(buffer, 0, packet, 0, count);
+                _packets.OnNext(packet);
+
+                if(message.Count != 0) {
+                    Buffer.BlockCopy(message.Buffer, count, message.Buffer, 0, message.Count);
+                }
+                Receive(e);
+            } else if(e.SocketError == SocketError.ConnectionReset) {
+                Connect(_settings);
+            }
+        }
+
+        private void ProcessDisconnect(SocketAsyncEventArgs e) {
+            if(e.SocketError == SocketError.Success) {
+                Connect(_settings);
+            }
         }
 
         public IObservable<Trade> Trades(Action<ITradeConfigurator> configure) {
             var c = new TradeConfigurator(_trades);
             configure(c);
-
             return c.Build();
         }
-
-        private void Listen(Message message, AsyncCallback callback) {
-            message.Socket.BeginReceive(message.Buffer, message.Count, message.Buffer.Length - message.Count, SocketFlags.None, callback, message);
-        }
-
-        private void EndConnect(IAsyncResult ar) {
-            var tcs= (TaskCompletionSource<bool>)ar.AsyncState;
-            tcs.SetResult(true);
-
-            var socket = (Socket)tcs.Task.AsyncState;
-
-            var message = new Message {
-                Buffer = new byte[socket.ReceiveBufferSize],
-                Socket=socket,
-            };
-            Listen(message,EndReadMessage);
-        }
-
-        private void EndReadMessage(IAsyncResult ar) {
-            var message = (Message)ar.AsyncState;
-            var buffer = message.Buffer;
-            int count = message.Socket.EndReceive(ar);
-
-            if(count <= 0) {
-                return;
-            }
-
-            message.Count += count;
-            if(message.Count > message.Buffer.Length) {
-                return;
-            }
-
-            for(int i = message.Count - 1; i >= 1; i--) {
-                if(buffer[i] == 0x0a && buffer[i - 1] == 0x0d) {
-                    count = i + 1;
-                    message.Count = message.Count - count;
-                    break;
-                }
-            }
-
-            var packet = new byte[count];
-            Buffer.BlockCopy(buffer, 0, packet, 0, count);
-            _packets.OnNext(packet);
-
-            if(message.Count != 0) {
-                Buffer.BlockCopy(message.Buffer, count, message.Buffer, 0, message.Count);
-            }
-
-            Listen(message, EndReadMessage);
-        }
-
+        
         private static void ProcessPackets(byte[] packet, IObserver<Trade> trades) {
             using(var reader = new StreamReader(new MemoryStream(packet))) {
                 var line = default(string);
@@ -141,10 +201,6 @@ namespace BitcoinCharts {
                 ReceiveBufferSize = 8 * 1024
             };
 
-            internal ConnectSettings Settings {
-                get { return _settings; }
-            }
-
             public IConnectConfigurator Address(string value) {
                 _settings.Address = value;
                 return this;
@@ -160,22 +216,19 @@ namespace BitcoinCharts {
                 return this;
             }
 
-            public Socket Build() {
-                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                socket.ReceiveBufferSize = _settings.ReceiveBufferSize;
-                return socket;                
+            public ConnectSettings Build() {
+                return _settings;
             }
         }
     }
 
     public static partial class Extensions {
-        public static Task<bool> ConnectAsync(this BitcoinChartsClient client) {
-            return client.ConnectAsync(x => x
-                .Address("api.bitcoincharts.com")
-                .Port(27007)
+        public static void Connect(this BitcoinChartsClient client) {
+            client.Connect(x => x
+                    .Address("api.bitcoincharts.com")
+                    .Port(27007)
             );
         }
-
         public static IObservable<Trade> Trades(this BitcoinChartsClient client) {
             return client.Trades(x => x.Symbol("*"));
         }

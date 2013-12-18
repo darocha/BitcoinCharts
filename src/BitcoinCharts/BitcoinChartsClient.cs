@@ -23,7 +23,6 @@ namespace BitcoinCharts {
         public BitcoinChartsClient(Action<IBitcoinChartsClientConfigurator> configure){            
             var c = new BitcoinChartsClientConfigurator();        
             configure(c);
-
             _client = c.Build();
         }
 
