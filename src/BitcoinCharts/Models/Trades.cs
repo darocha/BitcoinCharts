@@ -6,5 +6,6 @@ using System.Threading.Tasks;
 
 namespace BitcoinCharts.Models {
     public class Trades : List<Trade> {
+        public static Trades Empty { get; } = new Trades();
     }
 }

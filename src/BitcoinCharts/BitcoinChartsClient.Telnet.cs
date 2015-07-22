@@ -30,8 +30,9 @@ namespace BitcoinCharts {
         }
 
         public void Connect(Action<IConnectConfigurator> configure) {
-            var c = Configure<IConnectConfigurator, ConnectConfigurator>(configure);
-            _settings = c.Build();            
+            _settings = Configure<IConnectConfigurator, ConnectConfigurator>(configure).Build();
+            Connect(_settings);
+            _packets.Subscribe(x => ProcessPackets(x, _trades));
         }
 
         private void  Connect(ConnectSettings settings) {

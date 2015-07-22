@@ -2,13 +2,8 @@
 using BitcoinCharts.Net.Http;
 using BitcoinCharts.Net.Http.Formatting;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Linq.Expressions;
 using System.Net.Http;
-using System.Text;
 using System.Threading.Tasks;
-using System.Web;
 
 namespace BitcoinCharts {
     public partial class BitcoinChartsClient : IDisposable {
@@ -62,9 +57,10 @@ namespace BitcoinCharts {
         }
 
         internal static Task<Trades> GetTradesAsync(this HttpResponseMessage source) {
-            var query = HttpUtility.ParseQueryString(source.RequestMessage.RequestUri.Query);
-            var symbol = query["symbol"];
-            return source.Content.ReadAsAsync<Trades>(new[] { new TradeMediaTypeFormatter(symbol) });
+            //var query = HttpUtility.ParseQueryString(source.RequestMessage.RequestUri.Query);
+            //var symbol = query["symbol"];
+            //return source.Content.ReadAsAsync<Trades>(new[] { new TradeMediaTypeFormatter(symbol) });
+            return Task.FromResult(BitcoinCharts.Models.Trades.Empty);
         }
     }
 }
